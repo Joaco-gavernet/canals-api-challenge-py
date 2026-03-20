@@ -201,7 +201,7 @@ def normalize_items(raw_items: Any) -> list[dict[str, int]]:
 
 def load_products(conn, items: list[dict[str, int]]) -> dict[int, dict[str, Any]]:
     product_ids = [item["product_id"] for item in items]
-    placeholders = ", ".join("?" for _ in product_ids)
+    placeholders = ", ".join("?" for _ in product_ids) # helps avoid SQL injection vulnerability
 
     rows = conn.execute(
         f"SELECT id, name, price_cents FROM products WHERE id IN ({placeholders})",

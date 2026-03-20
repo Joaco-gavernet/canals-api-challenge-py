@@ -78,10 +78,54 @@ The mock geocoder understands these postal codes:
 python -m unittest discover -s tests -v
 ```
 
+## Order creation tree of possible cases
+
+This is the part of `create_order()` in `orders.py` that runs after validation, geocoding, pricing, and warehouse selection have already succeeded.
+
+- The flow is intentionally split into two stages: external payment first, then internal DB writes.
+- Payment happens before the DB transaction so the SQLite write lock stays short.
+- The DB phase is atomic: if any write step fails, the transaction is rolled back.
+- The main tradeoff is that payment can succeed before the DB write phase starts.
+- That means some failure paths can lead to "customer charged, but order not saved," which is why the code explicitly mentions future compensation/refund logic.
+
+```text
+create_order()
+│
+├─ Payment phase
+│  ├─ `charge_payment(...)` succeeds -> continue
+│  ├─ payment returns 402 -> raise `PaymentDeclined`
+│  ├─ payment service returns another HTTP error -> raise `ApiError`
+│  └─ unexpected exception -> bubble up
+│
+└─ DB write phase
+   ├─ open connection + `BEGIN IMMEDIATE`
+   │  └─ if this fails -> rollback/re-raise
+   │
+   ├─ `insert_order(...)`
+   │  └─ if this fails -> rollback/re-raise
+   │
+   ├─ `insert_order_items(...)`
+   │  └─ if this fails -> rollback/re-raise
+   │
+   ├─ `decrement_inventory(...)`
+   │  ├─ success -> continue
+   │  └─ stock changed concurrently -> raise `Conflict` -> rollback/re-raise
+   │
+   ├─ `conn.commit()`
+   │  ├─ success -> order finalized
+   │  └─ failure -> rollback/re-raise
+   │
+   └─ finally: close DB connection
+```
+
+
 ## Notes
 
 - The API stores customer and shipping data directly on the order as a snapshot.
 - The API does **not** store raw card numbers.
 - The app calls mocked geocoding and payment endpoints over real HTTP using `urllib.request`.
 - The inventory update is guarded inside a transaction to reduce overselling.
+- Payments are charged before the write transaction so the database lock stays short.
+- A future improvement is to add idempotency keys so retries do not create duplicate charges or duplicate orders.
+- A future improvement is to add compensation/refund logic so a successful payment can be reversed if the later database transaction fails.
 - Real payment/geocoding integrations are marked with `TO-DO` comments.
